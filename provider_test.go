@@ -53,6 +53,9 @@ func cleanupRecords(t *testing.T, p *Provider, records []libdns.Record) {
 }
 
 func TestProvider_GetRecords(t *testing.T) {
+	if apiPassword == "" {
+		t.Skip("LIBDNS_NETCUP_API_PASSWORD not set: this integration test exercises the legacy API and needs real credentials (customer number, API key, API password); an empty API password would instead select the new REST API, see TestAppendAndDeleteRecordsRest for that")
+	}
 	fmt.Println("Test GetRecords")
 
 	p := &Provider{
@@ -90,6 +93,9 @@ func TestProvider_GetRecords(t *testing.T) {
 }
 
 func TestProvider_SetRecords(t *testing.T) {
+	if apiPassword == "" {
+		t.Skip("LIBDNS_NETCUP_API_PASSWORD not set: this integration test exercises the legacy API and needs real credentials, see TestProvider_GetRecords")
+	}
 	fmt.Println("Test SetRecords")
 
 	p := &Provider{
