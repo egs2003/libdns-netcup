@@ -21,11 +21,13 @@ import (
 //     type.
 //   - REST API (for domains using CloudDNS, shown as the "CloudDNS" tab in
 //     the CCP): set only APIKey (the key from the "API Keys" section of the
-//     CCP, not "Legacy API Keys"), and leave APIPassword empty. This API can
-//     currently only manage "_acme-challenge" TXT records, which is exactly
-//     what's needed to solve the ACME dns-01 challenge (AppendRecords/
-//     DeleteRecords), but nothing more; GetRecords and SetRecords return an
-//     error in this mode. CustomerNumber is not used and can be left empty.
+//     CCP, not "Legacy API Keys"), and leave APIPassword empty. This mode
+//     also supports full record management (GetRecords, AppendRecords,
+//     SetRecords, DeleteRecords) for any record type, via the REST API's
+//     "changeset" and "revision" endpoints. CustomerNumber is not used and
+//     can be left empty. See rest.go's package doc comment for a caveat
+//     around GetRecords and concurrent use of netcup's own manual-revision
+//     workflow outside of this client.
 //
 // The legacy API requires a session ID for all requests, so at the beginning
 // of each legacy method call a login is performed to receive the session ID
@@ -53,13 +55,14 @@ func (p *Provider) useRest() bool {
 
 // GetRecords lists all the records in the zone.
 //
-// Not supported when the Provider is configured for the new netcup REST API
-// (i.e. APIPassword is empty; see the Provider docs); that API can only
-// manage "_acme-challenge" records and has no endpoint to list all records
-// of a zone.
+// When the Provider is configured for the new netcup REST API (i.e.
+// APIPassword is empty; see the Provider docs), this reads the records of
+// the zone's most recently created DNS revision; see rest.go's package doc
+// comment for a caveat around concurrent use of netcup's manual-revision
+// workflow outside of this client.
 func (p *Provider) GetRecords(ctx context.Context, zone string) ([]libdns.Record, error) {
 	if p.useRest() {
-		return nil, errRestNotSupported
+		return p.getRecordsRest(ctx, zone)
 	}
 	return p.getRecordsLegacy(ctx, zone)
 }
@@ -100,9 +103,10 @@ func (p *Provider) getRecordsLegacy(ctx context.Context, zone string) ([]libdns.
 // For MX records the priority is needed as an additional search parameter.
 //
 // When the Provider is configured for the new netcup REST API (i.e.
-// APIPassword is empty; see the Provider docs), only TXT records named
-// "_acme-challenge" or "_acme-challenge.<something>" (relative to zone) are
-// supported, which is what's needed to solve the ACME dns-01 challenge.
+// APIPassword is empty; see the Provider docs), this always adds the given
+// records via the changeset endpoint's "create" list, even if a record with
+// the same name and type already exists (matching this method's contract);
+// use SetRecords instead to replace rather than add.
 func (p *Provider) AppendRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
 	if p.useRest() {
 		return p.appendRecordsRest(ctx, zone, records)
@@ -162,14 +166,14 @@ func (p *Provider) appendRecordsLegacy(ctx context.Context, zone string, records
 // If none is found, the input is appended. If one is found, it is updated accordingly.
 // For MX records the priority is needed as an additional search parameter.
 //
-// Not supported when the Provider is configured for the new netcup REST API
-// (i.e. APIPassword is empty; see the Provider docs): that API has no way to
-// list or overwrite existing challenge records, only to add and remove
-// specific values, so use AppendRecords/DeleteRecords instead (which is what
-// Caddy's ACME dns-01 solver does).
+// When the Provider is configured for the new netcup REST API (i.e.
+// APIPassword is empty; see the Provider docs), this reads the zone's
+// current records first to find what to replace, since the REST API's
+// delete calls require an exact existing match (name, type, rdata and ttl)
+// rather than supporting "delete by name+type, whatever the value".
 func (p *Provider) SetRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
 	if p.useRest() {
-		return nil, errRestNotSupported
+		return p.setRecordsRest(ctx, zone, records)
 	}
 	return p.setRecordsLegacy(ctx, zone, records)
 }
@@ -224,10 +228,12 @@ func (p *Provider) setRecordsLegacy(ctx context.Context, zone string, records []
 // To be safe, the records to delete should include the IDs (for example from GetRecords)
 //
 // When the Provider is configured for the new netcup REST API (i.e.
-// APIPassword is empty; see the Provider docs), only TXT records named
-// "_acme-challenge" or "_acme-challenge.<something>" (relative to zone) are
-// supported, which is what's needed to clean up after the ACME dns-01
-// challenge.
+// APIPassword is empty; see the Provider docs), each record must match an
+// existing one's name, type, rdata and ttl exactly, since the REST API has
+// no "delete by name+type, whatever the value" call; a record whose TTL
+// wasn't tracked by the caller is assumed to be 3600s (netcup's own
+// default), which matches what AppendRecords on this Provider would have
+// created it with.
 func (p *Provider) DeleteRecords(ctx context.Context, zone string, records []libdns.Record) ([]libdns.Record, error) {
 	if p.useRest() {
 		return p.deleteRecordsRest(ctx, zone, records)
