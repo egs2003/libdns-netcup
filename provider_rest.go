@@ -24,10 +24,15 @@ func toRestRecordInput(r libdns.Record) restRecordInput {
 		// for records created without an explicit TTL in the CCP.
 		ttl = 3600
 	}
+	data := rr.Data
+	if rr.Type == "TXT" && !(len(data) >= 2 && data[0] == '"' && data[len(data)-1] == '"') {
+		// The REST API rejects TXT rdata that isn't enclosed in quotation marks.
+		data = `"` + data + `"`
+	}
 	return restRecordInput{
 		Name: rr.Name,
 		Type: rr.Type,
-		Data: rr.Data,
+		Data: data,
 		TTL:  ttl,
 	}
 }
@@ -36,10 +41,14 @@ func toRestRecordInput(r libdns.Record) restRecordInput {
 // into a libdns.Record. Named distinctly from util.go's toLibdnsRecord,
 // which converts the legacy API's different dnsRecord type instead.
 func restRecordToLibdns(r restRecord) libdns.Record {
+	data := r.Data
+	if r.Type == "TXT" && len(data) >= 2 && data[0] == '"' && data[len(data)-1] == '"' {
+		data = data[1 : len(data)-1]
+	}
 	return libdns.RR{
 		Name: r.Name,
 		Type: r.Type,
-		Data: r.Data,
+		Data: data,
 		TTL:  time.Duration(r.TTL) * time.Second,
 	}
 }
