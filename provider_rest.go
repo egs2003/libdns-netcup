@@ -8,6 +8,7 @@ package netcup
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/libdns/libdns"
@@ -24,15 +25,10 @@ func toRestRecordInput(r libdns.Record) restRecordInput {
 		// for records created without an explicit TTL in the CCP.
 		ttl = 3600
 	}
-	data := rr.Data
-	if rr.Type == "TXT" && !(len(data) >= 2 && data[0] == '"' && data[len(data)-1] == '"') {
-		// The REST API rejects TXT rdata that isn't enclosed in quotation marks.
-		data = `"` + data + `"`
-	}
 	return restRecordInput{
 		Name: rr.Name,
 		Type: rr.Type,
-		Data: data,
+		Data: toRestRdata(rr.Type, rr.Data),
 		TTL:  ttl,
 	}
 }
@@ -41,16 +37,80 @@ func toRestRecordInput(r libdns.Record) restRecordInput {
 // into a libdns.Record. Named distinctly from util.go's toLibdnsRecord,
 // which converts the legacy API's different dnsRecord type instead.
 func restRecordToLibdns(r restRecord) libdns.Record {
-	data := r.Data
-	if r.Type == "TXT" && len(data) >= 2 && data[0] == '"' && data[len(data)-1] == '"' {
-		data = data[1 : len(data)-1]
-	}
 	return libdns.RR{
 		Name: r.Name,
 		Type: r.Type,
-		Data: data,
+		Data: fromRestRdata(r.Type, r.Data),
 		TTL:  time.Duration(r.TTL) * time.Second,
 	}
+}
+
+// toRestRdata converts a libdns record's plain Data value into the "rdata"
+// string the REST API expects in zone-file presentation format. For TXT
+// records (and CAA, which the API also documents in this quoted form), that
+// means the value must be wrapped in double quotes, with any literal
+// backslash or double-quote character inside it escaped - without this, the
+// API rejects the request with "TXT rdata must be enclosed in quotation
+// marks". libdns.Record.Data itself stays the plain, unquoted text; this
+// quoting is purely a wire-format detail of this REST API.
+func toRestRdata(recordType, data string) string {
+	switch recordType {
+	case "TXT", "CAA":
+		return quoteZoneFileText(data)
+	default:
+		return data
+	}
+}
+
+// fromRestRdata reverses toRestRdata when reading records back from the
+// API, so libdns.Record.Data holds the plain value regardless of which
+// netcup API (legacy or REST) a Provider is configured for.
+func fromRestRdata(recordType, rdata string) string {
+	switch recordType {
+	case "TXT", "CAA":
+		return unquoteZoneFileText(rdata)
+	default:
+		return rdata
+	}
+}
+
+// quoteZoneFileText wraps s in double quotes, escaping any backslash or
+// double-quote character it contains, per RFC 1035's <character-string>
+// presentation format (the same convention used in zone files, which is
+// what the netcup REST API expects for TXT/CAA rdata).
+func quoteZoneFileText(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		if r == '\\' || r == '"' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
+}
+
+// unquoteZoneFileText reverses quoteZoneFileText. If s isn't wrapped in
+// double quotes (e.g. a server response that, contrary to what this client
+// sends, omits them), it's returned unchanged rather than mangled.
+func unquoteZoneFileText(s string) string {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return s
+	}
+	inner := s[1 : len(s)-1]
+	var b strings.Builder
+	b.Grow(len(inner))
+	escaped := false
+	for _, r := range inner {
+		if !escaped && r == '\\' {
+			escaped = true
+			continue
+		}
+		escaped = false
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // getRecordsRest lists all current records of the zone, read from the most
